@@ -55,7 +55,8 @@ public class WebSocketClient {
             throw new IllegalStateException("WebSocketClient socket not open");
         }
 
-        byte[] frameBytes = generateFrame(message.getBytes(StandardCharsets.UTF_8));
+        byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
+        byte[] frameBytes = generateFrame(messageBytes, messageBytes.length > 125);
         for (byte frameByte : frameBytes) {
             socket.getOutputStream().write(frameByte);
         }
@@ -94,15 +95,27 @@ public class WebSocketClient {
         return BASE64_ENCODER.encodeToString(keyBytes);
     }
 
-    private byte[] generateFrame(byte[] payload) {
+    private byte[] generateFrame(byte[] payload, boolean fin) {
         int payloadLength = payload.length;
-        ByteBuffer buffer = ByteBuffer.allocate(6 + payloadLength);
 
         byte finRsvOpcode = (byte) (0b10000000 | WebSocketCode.TEXT.getCode());
-        byte maskAndPayloadLength = (byte) (0b10000000 | payloadLength);
 
-        buffer.put(finRsvOpcode);
-        buffer.put(maskAndPayloadLength);
+        ByteBuffer buffer;
+        if (payloadLength <= 125) {
+            buffer = ByteBuffer.allocate(6 + payloadLength);
+            buffer.put(finRsvOpcode);
+            buffer.put((byte) (0x80 | payloadLength));
+        } else if (payloadLength <= 65535) {
+            buffer = ByteBuffer.allocate(6 + payloadLength + 2);
+            buffer.put(finRsvOpcode);
+            buffer.put((byte) (0b10000000 | 126));
+            buffer.putShort((short) payloadLength);  // Extended 16-bit length
+        } else {
+            buffer = ByteBuffer.allocate(6 + payloadLength + 8);
+            buffer.put(finRsvOpcode);
+            buffer.put((byte) (0b10000000 | 127));
+            buffer.putLong(payloadLength);  // Extended 64-bit length
+        }
 
         int maskKey = random.nextInt();
         buffer.putInt(maskKey);
