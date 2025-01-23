@@ -9,7 +9,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 
-public class WebSocketClient {
+public abstract class WebSocketClient implements IWebsocketListener {
 
     private Socket socket;
     private final String host;
@@ -19,6 +19,9 @@ public class WebSocketClient {
     private final Base64.Encoder BASE64_ENCODER = Base64.getEncoder();
     private final Map<String, String> HEADERS = new HashMap<>();
     private boolean open = false;
+
+
+//    private IWebsocketListener listener;
 
     public WebSocketClient(String host, int port) {
         this.host = host;
@@ -30,7 +33,7 @@ public class WebSocketClient {
         HEADERS.put("Sec-WebSocket-Version", "13");
     }
 
-    public void setOpen(boolean open) {
+    private void setOpen(boolean open) {
         this.open = open;
     }
 
@@ -38,13 +41,13 @@ public class WebSocketClient {
         return open;
     }
 
-    public void connect() throws IOException {
+    private void connect() throws IOException {
         this.socket = new Socket(host, port);
 
         HandShakeResponse response = sendHandShake(HEADERS);
         setOpen(response.success());
 
-        System.out.println("upgraded to websocket");
+        onOpen();
     }
 
     public void sendMessage(String message) throws IOException {
@@ -60,31 +63,40 @@ public class WebSocketClient {
         socket.getOutputStream().flush();
     }
 
-    public void startListening() throws IOException {
-        if (!open) {
-            throw new IllegalStateException("WebSocketClient socket not open");
+    public Thread start() throws IOException {
+        if (open) {
+            throw new IllegalStateException("WebSocketClient already open");
+        } else {
+            connect();
         }
 
         Thread thread = new Thread(() -> {
             try (InputStream in = socket.getInputStream()) {
                 while (open) {
                     String message = readFrame(in);
-                    System.out.println("Received message: " + message);
+                    onMessage(message);
                 }
-            } catch (IOException e) {
-
+            } catch (IOException _) {
             }
         });
         thread.start();
+        return thread;
+    }
+
+    public void startBlocking() throws InterruptedException, IOException {
+        Thread thread = start();
+        thread.join();
     }
 
     public void close() throws IOException {
         if (!open) {
-            throw new IllegalStateException("WebSocketClient socket not open");
+            return;
         }
 
-        sendCloseCode(WebSocketCode.CONNECTION_CLOSE.getCode());
+        sendCloseCode(1000);
         setOpen(false);
+
+        onClose(WebSocketCode.CONNECTION_CLOSE);
     }
 
     private void sendCloseCode(int closeCode) throws IOException {
@@ -99,9 +111,9 @@ public class WebSocketClient {
         byte[] frameBytes;
 
         if (closeCodeBytes != null) {
-            frameBytes = generateFrame(closeCodeBytes, false, WebSocketCode.CONNECTION_CLOSE);
+            frameBytes = generateFrame(closeCodeBytes, true, WebSocketCode.CONNECTION_CLOSE);
         } else {
-            frameBytes = generateFrame(new byte[0], false, WebSocketCode.CONNECTION_CLOSE);
+            frameBytes = generateFrame(new byte[0], true, WebSocketCode.CONNECTION_CLOSE);
         }
 
         socket.getOutputStream().write(frameBytes);
@@ -170,6 +182,7 @@ public class WebSocketClient {
             boolean success = responseHeader.equals("HTTP/1.1 101 Switching Protocols");
             return new HandShakeResponse(success, responseHeader);
         } catch (IOException e) {
+            onError(e.getMessage());
             return new HandShakeResponse(false, e.getMessage());
         }
     }

@@ -4,10 +4,10 @@ public interface IWebsocketListener {
 
     void onMessage(String message);
 
-    void onClose(int code, String reason);
+    void onClose(WebSocketCode code);
 
     void onError(String error);
 
-    void onOpen(int code, String reason);
+    void onOpen();
 
 }
