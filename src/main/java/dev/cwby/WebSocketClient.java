@@ -1,9 +1,6 @@
 package dev.cwby;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.*;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -56,11 +53,99 @@ public class WebSocketClient {
         }
 
         byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
-        byte[] frameBytes = generateFrame(messageBytes, messageBytes.length > 125);
+        byte[] frameBytes = generateFrame(messageBytes, true, WebSocketCode.TEXT);
         for (byte frameByte : frameBytes) {
             socket.getOutputStream().write(frameByte);
         }
         socket.getOutputStream().flush();
+    }
+
+    public void startListening() throws IOException {
+        if (!open) {
+            throw new IllegalStateException("WebSocketClient socket not open");
+        }
+
+        Thread thread = new Thread(() -> {
+            try (InputStream in = socket.getInputStream()) {
+                while (open) {
+                    String message = readFrame(in);
+                    System.out.println("Received message: " + message);
+                }
+            } catch (IOException e) {
+
+            }
+        });
+        thread.start();
+    }
+
+    public void close() throws IOException {
+        if (!open) {
+            throw new IllegalStateException("WebSocketClient socket not open");
+        }
+
+        sendCloseCode(WebSocketCode.CONNECTION_CLOSE.getCode());
+        setOpen(false);
+    }
+
+    private void sendCloseCode(int closeCode) throws IOException {
+        byte[] closeCodeBytes = null;
+
+        if (closeCode != -1) {
+            closeCodeBytes = new byte[2];
+            closeCodeBytes[0] = (byte) ((closeCode >> 8) & 0xFF);
+            closeCodeBytes[1] = (byte) (closeCode & 0xFF);
+        }
+
+        byte[] frameBytes;
+
+        if (closeCodeBytes != null) {
+            frameBytes = generateFrame(closeCodeBytes, false, WebSocketCode.CONNECTION_CLOSE);
+        } else {
+            frameBytes = generateFrame(new byte[0], false, WebSocketCode.CONNECTION_CLOSE);
+        }
+
+        socket.getOutputStream().write(frameBytes);
+        socket.getOutputStream().flush();
+    }
+
+    private String readFrame(InputStream in) throws IOException {
+        int firstByte = in.read();
+        if (firstByte == -1) {
+            System.out.println("No more frames");
+        }
+
+        // TODO: properly handle FIN bit in websocket frames for proper fragmentation and multiplexing
+        // boolean fin = (firstByte & 0x80) != 0;
+        // int opcode = firstByte & 0x0F;
+
+        int secondByte = in.read();
+        boolean masked = (secondByte & 0x80) != 0;
+
+        if (masked) {
+            throw new IOException("received a masked frame from the server");
+        }
+
+        int payloadLength = secondByte & 0x7F;
+
+        if (payloadLength == 126) {
+            payloadLength = (in.read() << 8) | in.read();
+        } else if (payloadLength == 127) {
+            payloadLength = in.read() << 56 | in.read() << 48 | in.read() << 40 | in.read() << 32 | in.read() << 24 | in.read() << 16 | in.read() << 8 | in.read();
+        }
+
+        byte[] payload = new byte[payloadLength];
+
+        int bytesRead = 0;
+
+        while (bytesRead < payloadLength) {
+            int read = in.read(payload, bytesRead, payloadLength - bytesRead);
+            if (read == -1) {
+                throw new IOException("No more data");
+            }
+            bytesRead += read;
+        }
+
+        return new String(payload, StandardCharsets.UTF_8);
     }
 
     private String buildHandshakeRequest(Map<String, String> headersMap) {
@@ -95,10 +180,10 @@ public class WebSocketClient {
         return BASE64_ENCODER.encodeToString(keyBytes);
     }
 
-    private byte[] generateFrame(byte[] payload, boolean fin) {
+    private byte[] generateFrame(byte[] payload, boolean fin, WebSocketCode code) {
         int payloadLength = payload.length;
 
-        byte finRsvOpcode = (byte) (0b10000000 | WebSocketCode.TEXT.getCode());
+        byte finRsvOpcode = (byte) ((fin ? 0b10000000 : 0b00000000) | code.getCode());
 
         ByteBuffer buffer;
         if (payloadLength <= 125) {

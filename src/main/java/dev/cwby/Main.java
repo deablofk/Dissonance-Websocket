@@ -9,11 +9,14 @@ public class Main {
             WebSocketClient client = new WebSocketClient("localhost", 8765);
             client.connect();
             long count = 0;
-            while (true) {
+
+            while (count < 10) {
                 client.sendMessage("tubarão " + count);
                 Thread.sleep(1000);
                 count++;
             }
+            client.close();
+            client.startListening();
         } catch (Exception e) {
             e.printStackTrace();
         }

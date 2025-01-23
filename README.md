@@ -9,4 +9,4 @@ The goal of that project is to implement the [RFC-6455 (Websocket Protocol)](htt
 - [ ] Permessage Deflate
 - [ ] Fragmentation/Multiplexing
 - [ ] Proper Websocket FAIL
-- [ ] Receiving Message
+- [X] Receiving Message
