@@ -1,4 +1,6 @@
 package dev.cwby;
 
-public record HandShakeResponse(boolean success, String message) {
+import java.util.Map;
+
+public record HandShakeResponse(boolean success, Map<String, String> headers) {
 }

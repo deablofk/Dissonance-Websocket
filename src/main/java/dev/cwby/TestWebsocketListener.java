@@ -4,8 +4,8 @@ import java.io.IOException;
 
 public class TestWebsocketListener extends WebSocketClient {
 
-    public TestWebsocketListener(String host, int port) {
-        super(host, port);
+    public TestWebsocketListener(String host, int port, boolean deflate, boolean tls) {
+        super(host, port, deflate, tls);
     }
 
     @Override

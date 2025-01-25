@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    application
 }
 
 group = "dev.cwby"
@@ -16,4 +17,8 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+application {
+    mainClass = "dev.cwby.Main"
 }

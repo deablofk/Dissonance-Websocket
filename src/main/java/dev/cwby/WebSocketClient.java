@@ -1,29 +1,34 @@
 package dev.cwby;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
 import java.io.*;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
+import java.util.zip.DataFormatException;
+import java.util.zip.Deflater;
+import java.util.zip.Inflater;
 
 public abstract class WebSocketClient implements IWebsocketListener {
 
     private Socket socket;
     private final String host;
     private final int port;
-    // maybe use a faster random alternative for improved performance (it is already fast as fuck)
-    private final Random random = new Random();
-    private final Base64.Encoder BASE64_ENCODER = Base64.getEncoder();
-    private final Map<String, String> HEADERS = new HashMap<>();
     private boolean open = false;
+    private static final Random random = new Random();
+    private static final Base64.Encoder BASE64_ENCODER = Base64.getEncoder();
+    private static final Map<String, String> HEADERS = new HashMap<>();
+    private boolean deflateACK = false;
+    private final boolean tls;
 
-
-//    private IWebsocketListener listener;
-
-    public WebSocketClient(String host, int port) {
+    public WebSocketClient(String host, int port, boolean deflate, boolean tls) {
         this.host = host;
         this.port = port;
         HEADERS.put("Host", this.host + ":" + this.port);
@@ -31,6 +36,10 @@ public abstract class WebSocketClient implements IWebsocketListener {
         HEADERS.put("Connection", "Upgrade");
         HEADERS.put("Sec-WebSocket-Key", generateWebSocketKey());
         HEADERS.put("Sec-WebSocket-Version", "13");
+        if (deflate) {
+            HEADERS.put("Sec-WebSocket-Extensions", "permessage-deflate");
+        }
+        this.tls = tls;
     }
 
     private void setOpen(boolean open) {
@@ -41,9 +50,24 @@ public abstract class WebSocketClient implements IWebsocketListener {
         return open;
     }
 
-    private void connect() throws IOException {
-        this.socket = new Socket(host, port);
+    private Socket createTLSSocket() throws IOException {
+        try {
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, null, null);
 
+            SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            return factory.createSocket(host, port);
+        } catch (NoSuchAlgorithmException | KeyManagementException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void connect() throws IOException {
+        if (this.tls) {
+            this.socket = createTLSSocket();
+        } else {
+            this.socket = new Socket(host, port);
+        }
         HandShakeResponse response = sendHandShake(HEADERS);
         setOpen(response.success());
 
@@ -55,7 +79,7 @@ public abstract class WebSocketClient implements IWebsocketListener {
             throw new IllegalStateException("WebSocketClient socket not open");
         }
 
-        byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
+        byte[] messageBytes = deflateACK ? compress(message.getBytes(StandardCharsets.UTF_8)) : message.getBytes(StandardCharsets.UTF_8);
         byte[] frameBytes = generateFrame(messageBytes, true, WebSocketCode.TEXT);
         for (byte frameByte : frameBytes) {
             socket.getOutputStream().write(frameByte);
@@ -157,6 +181,10 @@ public abstract class WebSocketClient implements IWebsocketListener {
             bytesRead += read;
         }
 
+        if (deflateACK) {
+            return new String(decompress(payload), StandardCharsets.UTF_8);
+        }
+
         return new String(payload, StandardCharsets.UTF_8);
     }
 
@@ -178,12 +206,28 @@ public abstract class WebSocketClient implements IWebsocketListener {
             out.write(handshakeRequest);
             out.flush();
 
-            String responseHeader = in.readLine();
-            boolean success = responseHeader.equals("HTTP/1.1 101 Switching Protocols");
-            return new HandShakeResponse(success, responseHeader);
+            String httpLineHeader = in.readLine();
+            Map<String, String> responseHeaders = new HashMap<>();
+
+            String line;
+            while ((line = in.readLine()) != null && !line.isEmpty()) {
+                String[] values = line.split(":", 2);
+                System.out.println(line);
+                responseHeaders.put(values[0].toLowerCase().trim(), values[1].trim());
+            }
+
+            String value = responseHeaders.get("Sec-WebSocket-Extensions".toLowerCase());
+            System.out.println(value);
+            if (value != null && value.contains("permessage-deflate")) {
+                System.out.println("deflate ack handshake received");
+                this.deflateACK = true;
+            }
+
+            boolean success = httpLineHeader.equals("HTTP/1.1 101 Switching Protocols");
+            return new HandShakeResponse(success, responseHeaders);
         } catch (IOException e) {
             onError(e.getMessage());
-            return new HandShakeResponse(false, e.getMessage());
+            return new HandShakeResponse(false, Map.of());
         }
     }
 
@@ -196,7 +240,7 @@ public abstract class WebSocketClient implements IWebsocketListener {
     private byte[] generateFrame(byte[] payload, boolean fin, WebSocketCode code) {
         int payloadLength = payload.length;
 
-        byte finRsvOpcode = (byte) ((fin ? 0b10000000 : 0b00000000) | code.getCode());
+        byte finRsvOpcode = (byte) ((fin ? 0b10000000 : 0b00000000) | ((deflateACK && code != WebSocketCode.CONNECTION_CLOSE) ? 0b01000000 : 0b00000000) | code.getCode());
 
         ByteBuffer buffer;
         if (payloadLength <= 125) {
@@ -229,6 +273,40 @@ public abstract class WebSocketClient implements IWebsocketListener {
             maskedPayload[i] = ((byte) (payload[i] ^ maskBytes[i % 4]));
         }
         return maskedPayload;
+    }
+
+    private byte[] compress(byte[] data) {
+        Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
+        deflater.setInput(data);
+        deflater.finish();
+
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream(data.length);
+        byte[] buffer = new byte[1024];
+
+        while (!deflater.finished()) {
+            int count = deflater.deflate(buffer);
+            outputStream.write(buffer, 0, count);
+        }
+
+        deflater.end();
+        return outputStream.toByteArray();
+    }
+
+    private byte[] decompress(byte[] data) throws IOException {
+        Inflater inflater = new Inflater(true);
+        inflater.setInput(data);
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream(data.length);
+        byte[] buffer = new byte[1024];
+        try {
+            while (!inflater.finished() && !inflater.needsInput()) {
+                int count = inflater.inflate(buffer);
+                outputStream.write(buffer, 0, count);
+            }
+        } catch (DataFormatException e) {
+            throw new IOException("Failed to decompress WebSocket frame", e);
+        }
+        inflater.end();
+        return outputStream.toByteArray();
     }
 
 }

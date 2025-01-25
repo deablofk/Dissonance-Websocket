@@ -5,8 +5,8 @@ The goal of that project is to implement the [RFC-6455 (Websocket Protocol)](htt
 #### WIP
 
 - [x] Basic websocket implementation
-- [ ] Transport Layer Security
-- [ ] Permessage Deflate
+- [X] Transport Layer Security
+- [X] Permessage Deflate
 - [ ] Fragmentation/Multiplexing
 - [ ] Proper Websocket FAIL
 - [X] Receiving Message
